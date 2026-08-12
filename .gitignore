@@ -17,3 +17,17 @@ logs/
 # OS files
 Thumbs.db
 .DS_Store
+
+# WSL virtual environment
+.venv-wsl/
+
+# Trained models
+models/
+
+# Generated reports
+
+# Experimental / temporary files
+new/
+
+# Raw datasets
+data/raw/
