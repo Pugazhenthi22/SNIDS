@@ -1,0 +1,20 @@
+SNIDS EXPERIMENT 4 - ATTACK VALIDATION
+======================================================================
+
+Total attack samples: 64,743
+Correct predictions: 64,597
+Incorrect predictions: 146
+Overall accuracy: 99.77%
+
+                  precision    recall  f1-score   support
+
+            DDoS       1.00      1.00      1.00     25603
+   DoS GoldenEye       1.00      1.00      1.00      2057
+        DoS Hulk       1.00      1.00      1.00     34569
+DoS Slowhttptest       1.00      0.99      0.99      1046
+   DoS slowloris       1.00      1.00      1.00      1077
+        PortScan       1.00      0.97      0.98       391
+
+       micro avg       1.00      1.00      1.00     64743
+       macro avg       1.00      0.99      0.99     64743
+    weighted avg       1.00      1.00      1.00     64743
