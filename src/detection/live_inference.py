@@ -4,6 +4,7 @@ import joblib
 from pathlib import Path
 
 from flow_builder import FlowBuilder
+from alert_logger import log_alert
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -85,7 +86,10 @@ def main():
     )
 
     print("\nStarting live packet capture...")
-    print("A prediction will be generated when a flow reaches 5 packets.")
+    print(
+        "A prediction will be generated "
+        "when a flow reaches 5 packets."
+    )
     print("Press CTRL+C to stop.\n")
 
     processed_flows = set()
@@ -118,7 +122,6 @@ def main():
         if features is None:
             return
 
-        # Convert to DataFrame
         live_df = pd.DataFrame(
             [features]
         )
@@ -164,6 +167,39 @@ def main():
         )
 
         # -----------------------------------------------------
+        # Get flow endpoints
+        # -----------------------------------------------------
+
+        endpoint_a = flow_key[0]
+        endpoint_b = flow_key[1]
+
+        endpoint_a_ip = endpoint_a[0]
+        endpoint_a_port = endpoint_a[1]
+
+        endpoint_b_ip = endpoint_b[0]
+        endpoint_b_port = endpoint_b[1]
+
+        # -----------------------------------------------------
+        # Determine severity
+        # -----------------------------------------------------
+
+        if prediction_label == "Benign":
+            severity = "LOW"
+        else:
+            severity = "HIGH"
+
+        # -----------------------------------------------------
+        # Log prediction
+        # -----------------------------------------------------
+
+        log_alert(
+            prediction=prediction_label,
+            source_ip=endpoint_a_ip,
+            destination_ip=endpoint_b_ip,
+            packets=len(flow.packets),
+        )
+
+        # -----------------------------------------------------
         # Display result
         # -----------------------------------------------------
 
@@ -191,6 +227,16 @@ def main():
             f"{prediction_label}"
         )
 
+        print(
+            f"Endpoint A   : "
+            f"{endpoint_a_ip}:{endpoint_a_port}"
+        )
+
+        print(
+            f"Endpoint B   : "
+            f"{endpoint_b_ip}:{endpoint_b_port}"
+        )
+
         if prediction_label == "Benign":
 
             print(
@@ -203,7 +249,17 @@ def main():
                 "\nSTATUS       : 🚨 ATTACK DETECTED"
             )
 
-        print("=" * 70)
+        print(
+            f"Severity     : {severity}"
+        )
+
+        print(
+            "Alert logged to: logs/snids_alerts.csv"
+        )
+
+    # ---------------------------------------------------------
+    # Start packet capture
+    # ---------------------------------------------------------
 
     try:
 
