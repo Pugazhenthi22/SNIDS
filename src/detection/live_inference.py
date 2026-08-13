@@ -38,19 +38,11 @@ def main():
     print("SNIDS LIVE ML INFERENCE")
     print("=" * 70)
 
-    # ---------------------------------------------------------
-    # Load model
-    # ---------------------------------------------------------
-
     print("\nLoading Balanced Random Forest...")
 
     model = joblib.load(MODEL_FILE)
 
     print("Model loaded successfully.")
-
-    # ---------------------------------------------------------
-    # Load training feature schema
-    # ---------------------------------------------------------
 
     X_train = pd.read_parquet(TRAIN_FILE)
 
@@ -59,10 +51,6 @@ def main():
     print(
         f"Expected features: {len(feature_names)}"
     )
-
-    # ---------------------------------------------------------
-    # Load label mapping
-    # ---------------------------------------------------------
 
     label_mapping_df = pd.read_csv(
         LABEL_FILE
@@ -74,10 +62,6 @@ def main():
             label_mapping_df["Label"]
         )
     )
-
-    # ---------------------------------------------------------
-    # Create flow builder
-    # ---------------------------------------------------------
 
     builder = FlowBuilder(LOCAL_IP)
 
@@ -103,19 +87,13 @@ def main():
 
         flow = builder.flows[flow_key]
 
-        # Wait until the flow has enough packets
         if len(flow.packets) < 5:
             return
 
-        # Predict each flow only once
         if flow_key in processed_flows:
             return
 
         processed_flows.add(flow_key)
-
-        # -----------------------------------------------------
-        # Extract features
-        # -----------------------------------------------------
 
         features = builder.get_features(flow_key)
 
@@ -125,10 +103,6 @@ def main():
         live_df = pd.DataFrame(
             [features]
         )
-
-        # -----------------------------------------------------
-        # Verify feature schema
-        # -----------------------------------------------------
 
         if len(live_df.columns) != len(feature_names):
 
@@ -146,29 +120,36 @@ def main():
 
             return
 
-        # Reorder exactly like training
         live_df = live_df[
             feature_names
         ]
 
-        # -----------------------------------------------------
-        # Generate prediction
-        # -----------------------------------------------------
+        # -------------------------------------------------
+        # Prediction + confidence
+        # -------------------------------------------------
 
-        prediction = model.predict(
+        prediction_probabilities = model.predict_proba(
             live_df
         )[0]
 
-        prediction_id = int(prediction)
+        best_index = prediction_probabilities.argmax()
+
+        prediction_id = int(
+            model.classes_[best_index]
+        )
+
+        confidence = float(
+            prediction_probabilities[best_index]
+        )
 
         prediction_label = label_mapping.get(
             prediction_id,
             f"Unknown ({prediction_id})"
         )
 
-        # -----------------------------------------------------
-        # Get flow endpoints
-        # -----------------------------------------------------
+        # -------------------------------------------------
+        # Flow endpoints
+        # -------------------------------------------------
 
         endpoint_a = flow_key[0]
         endpoint_b = flow_key[1]
@@ -179,18 +160,18 @@ def main():
         endpoint_b_ip = endpoint_b[0]
         endpoint_b_port = endpoint_b[1]
 
-        # -----------------------------------------------------
-        # Determine severity
-        # -----------------------------------------------------
+        # -------------------------------------------------
+        # Severity
+        # -------------------------------------------------
 
         if prediction_label == "Benign":
             severity = "LOW"
         else:
             severity = "HIGH"
 
-        # -----------------------------------------------------
+        # -------------------------------------------------
         # Log prediction
-        # -----------------------------------------------------
+        # -------------------------------------------------
 
         log_alert(
             prediction=prediction_label,
@@ -199,9 +180,9 @@ def main():
             packets=len(flow.packets),
         )
 
-        # -----------------------------------------------------
+        # -------------------------------------------------
         # Display result
-        # -----------------------------------------------------
+        # -------------------------------------------------
 
         print("\n" + "=" * 70)
         print("SNIDS PREDICTION")
@@ -225,6 +206,11 @@ def main():
         print(
             f"Prediction   : "
             f"{prediction_label}"
+        )
+
+        print(
+            f"Confidence   : "
+            f"{confidence * 100:.2f}%"
         )
 
         print(
@@ -257,9 +243,9 @@ def main():
             "Alert logged to: logs/snids_alerts.csv"
         )
 
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
     # Start packet capture
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
 
     try:
 
