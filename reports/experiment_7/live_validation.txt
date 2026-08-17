@@ -1,0 +1,80 @@
+SNIDS EXPERIMENT 7 - LIVE VALIDATION
+=====================================
+
+Objective:
+Validate the live SNIDS packet capture, flow construction,
+feature extraction, ML inference, confidence scoring,
+severity classification, and alert logging pipeline.
+
+Environment:
+Platform: WSL2 Ubuntu
+Interface: eth0
+WSL IPv4: 172.18.167.99
+ML Model: Balanced Random Forest
+Expected Features: 69
+
+LIVE BENIGN TRAFFIC TEST
+------------------------
+
+Normal HTTPS traffic was generated using curl.
+
+Observed results:
+
+- Live packet capture: PASS
+- Flow construction: PASS
+- Feature extraction: PASS
+- Feature count: 69
+- ML prediction: Benign
+- Confidence: approximately 98-99%
+- Severity: LOW
+- Alert logging: PASS
+
+Example live predictions:
+
+172.18.167.99 -> external HTTPS endpoint
+Prediction: Benign
+Confidence: 98-99%
+Severity: LOW
+
+PACKET CAPTURE VALIDATION
+-------------------------
+
+Scapy capture on eth0 successfully captured:
+
+136 packets
+TCP packets: 136
+UDP packets: 0
+
+LOOPBACK TEST
+-------------
+
+A localhost PortScan was attempted using:
+
+nmap -p 1-100 127.0.0.1
+
+The scan itself completed successfully.
+
+However, Scapy captured:
+
+lo interface: 0 packets
+
+Routing inspection showed that traffic destined for
+172.18.167.99 is routed through the loopback interface.
+
+Scapy's "any" interface was also unavailable in the
+current WSL environment.
+
+Therefore, the localhost PortScan test is considered
+INCONCLUSIVE rather than a detection failure.
+
+CONCLUSION
+----------
+
+The live SNIDS pipeline successfully processes real
+eth0 traffic from packet capture through ML inference
+and alert logging.
+
+Loopback attack validation requires a separate isolated
+test environment because the current WSL configuration
+does not expose loopback traffic to the Scapy capture
+used by SNIDS.
