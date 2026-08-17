@@ -1,0 +1,43 @@
+SNIDS EXPERIMENT 8A - CONTROLLED DOCKER BASELINE
+================================================
+
+Objective:
+Validate live SNIDS detection against a controlled
+Docker TCP service.
+
+Test Target:
+Container: snids-test-server
+Container IP: 172.17.0.2
+TCP Port: 9000
+
+SNIDS Host:
+WSL IP: 172.18.167.99
+Capture interface: eth0
+
+Result:
+Live Docker traffic was successfully captured by SNIDS.
+
+Observed flows:
+
+172.17.0.2:9000 -> 172.18.167.99:44074
+Prediction: Benign
+Confidence: 88.05%
+Severity: LOW
+
+172.17.0.2:9000 -> 172.18.167.99:35196
+Prediction: Benign
+Confidence: 88.05%
+Severity: LOW
+
+Validation:
+Packet capture              PASS
+Flow construction           PASS
+69-feature extraction       PASS
+ML inference                PASS
+Confidence scoring           PASS
+Severity classification      PASS
+Alert logging                PASS
+
+Conclusion:
+The live SNIDS pipeline successfully processes
+traffic involving an isolated Docker test target.
