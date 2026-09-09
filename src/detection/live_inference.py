@@ -1,303 +1,219 @@
+import sys
+import time
+import subprocess
+from pathlib import Path
+from collections import defaultdict, deque
+
 import pandas as pd
 import joblib
-
-from pathlib import Path
-import subprocess
 
 from flow_builder import FlowBuilder
 from alert_logger import log_alert
 
 
+# ================================================================
+# Paths / constants
+# ================================================================
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-MODEL_FILE = (
-    PROJECT_ROOT
-    / "models"
-    / "balanced_random_forest.joblib"
-)
+MODEL_FILE = PROJECT_ROOT / "models" / "balanced_random_forest.joblib"
+TRAIN_FILE = PROJECT_ROOT / "data" / "processed" / "X_train.parquet"
+LABEL_FILE = PROJECT_ROOT / "data" / "processed" / "label_mapping.csv"
 
-TRAIN_FILE = (
-    PROJECT_ROOT
-    / "data"
-    / "processed"
-    / "X_train.parquet"
-)
+# Flow-based ML classification fires once a flow reaches this many packets.
+FLOW_PACKET_THRESHOLD = 5
 
-LABEL_FILE = (
-    PROJECT_ROOT
-    / "data"
-    / "processed"
-    / "label_mapping.csv"
-)
+# Behavioral PortScan detection: N unique destination ports within WINDOW seconds.
+PORTSCAN_WINDOW = 10
+PORTSCAN_THRESHOLD = 10
 
 
-def get_local_ip():
-    """
-    Get the IPv4 address assigned to the WSL eth0 interface.
-    """
+# ================================================================
+# Interface / local IP resolution
+# ================================================================
+
+def get_local_ip(interface):
+    """Return the IPv4 address assigned to the given network interface."""
+    if interface == "lo":
+        return "127.0.0.1"
 
     try:
         result = subprocess.check_output(
-            ["ip", "-4", "addr", "show", "eth0"],
-            text=True
+            ["ip", "-4", "addr", "show", interface],
+            text=True,
         )
-
         for line in result.splitlines():
-
             line = line.strip()
-
             if line.startswith("inet "):
-
                 return line.split()[1].split("/")[0]
-
     except Exception as error:
+        raise RuntimeError(f"Unable to determine IP address for {interface}: {error}")
 
-        raise RuntimeError(
-            f"Unable to determine eth0 IP address: {error}"
+    raise RuntimeError(f"No IPv4 address found on {interface}.")
+
+
+CAPTURE_INTERFACE = sys.argv[1] if len(sys.argv) > 1 else "eth0"
+LOCAL_IP = get_local_ip(CAPTURE_INTERFACE)
+
+
+# ================================================================
+# PortScan behavioral detector
+# ================================================================
+
+class PortScanDetector:
+    """
+    Tracks outbound TCP SYN packets per source IP. If a single source
+    touches PORTSCAN_THRESHOLD or more unique destination ports within
+    PORTSCAN_WINDOW seconds, it's flagged as a PortScan and logged once.
+
+    Only pure SYN packets (flags == "S") count towards the port total.
+    Replies such as SYN-ACK, RST, and RST-ACK are intentionally ignored,
+    since counting them corrupts the unique-port count and causes false
+    positives/negatives.
+    """
+
+    def __init__(self, window=PORTSCAN_WINDOW, threshold=PORTSCAN_THRESHOLD):
+        self.window = window
+        self.threshold = threshold
+        self.tracker = defaultdict(deque)   # src_ip -> deque[(timestamp, dst_ip, dst_port)]
+        self.alerted = set()
+
+    def process(self, packet):
+        if not packet.haslayer("IP") or not packet.haslayer("TCP"):
+            return
+
+        tcp_layer = packet["TCP"]
+
+        # Pure SYN only — excludes SYN-ACK, RST, RST-ACK, ACK, etc.
+        if tcp_layer.flags != "S":
+            return
+
+        ip_layer = packet["IP"]
+        source_ip = ip_layer.src
+        destination_ip = ip_layer.dst
+        destination_port = int(tcp_layer.dport)
+        now = time.time()
+
+        events = self.tracker[source_ip]
+        events.append((now, destination_ip, destination_port))
+
+        while events and now - events[0][0] > self.window:
+            events.popleft()
+
+        unique_ports = {port for (_, _, port) in events}
+
+        if len(unique_ports) >= self.threshold:
+            if source_ip not in self.alerted:
+                self.alerted.add(source_ip)
+                self._raise_alert(source_ip, destination_ip, unique_ports)
+        elif source_ip in self.alerted:
+            # Activity dropped back below threshold; allow re-alerting later.
+            self.alerted.discard(source_ip)
+
+    def _raise_alert(self, source_ip, destination_ip, unique_ports):
+        print("\n" + "=" * 70)
+        print("SNIDS BEHAVIORAL DETECTION")
+        print("=" * 70)
+        print("Detection    : PortScan")
+        print(f"Source IP    : {source_ip}")
+        print(f"Target IP    : {destination_ip}")
+        print(f"Unique Ports : {len(unique_ports)}")
+        print(f"Window       : {self.window} seconds")
+        print("STATUS       : \U0001f6a8 ATTACK DETECTED")
+        print("Severity     : HIGH")
+
+        log_alert(
+            prediction="PortScan",
+            source_ip=source_ip,
+            destination_ip=destination_ip,
+            packets=len(unique_ports),
         )
 
-    raise RuntimeError(
-        "No IPv4 address found on eth0."
-    )
+        print("Alert logged to: logs/snids_alerts.csv")
 
 
-LOCAL_IP = get_local_ip()
-
+# ================================================================
+# Main
+# ================================================================
 
 def main():
-
     print("=" * 70)
     print("SNIDS LIVE ML INFERENCE")
     print("=" * 70)
 
-    # ---------------------------------------------------------
-    # Load model
-    # ---------------------------------------------------------
-
     print("\nLoading Balanced Random Forest...")
+    model = joblib.load(MODEL_FILE)
+    print("Model loaded successfully.")
 
-    model = joblib.load(
-        MODEL_FILE
-    )
+    X_train = pd.read_parquet(TRAIN_FILE)
+    feature_names = list(X_train.columns)
+    print(f"Expected features: {len(feature_names)}")
 
-    print(
-        "Model loaded successfully."
-    )
+    label_mapping_df = pd.read_csv(LABEL_FILE)
+    label_mapping = dict(zip(label_mapping_df["Label_ID"], label_mapping_df["Label"]))
 
-    # ---------------------------------------------------------
-    # Load training feature schema
-    # ---------------------------------------------------------
+    builder = FlowBuilder(LOCAL_IP)
+    scanner = PortScanDetector()
 
-    X_train = pd.read_parquet(
-        TRAIN_FILE
-    )
-
-    feature_names = list(
-        X_train.columns
-    )
-
-    print(
-        f"Expected features: "
-        f"{len(feature_names)}"
-    )
-
-    # ---------------------------------------------------------
-    # Load label mapping
-    # ---------------------------------------------------------
-
-    label_mapping_df = pd.read_csv(
-        LABEL_FILE
-    )
-
-    label_mapping = dict(
-        zip(
-            label_mapping_df["Label_ID"],
-            label_mapping_df["Label"]
-        )
-    )
-
-    # ---------------------------------------------------------
-    # Create flow builder
-    # ---------------------------------------------------------
-
-    builder = FlowBuilder(
-        LOCAL_IP
-    )
-
-    print(
-        f"Local IP: {LOCAL_IP}"
-    )
-
-    print(
-        "\nStarting live packet capture..."
-    )
-
-    print(
-        "A prediction will be generated "
-        "when a flow reaches 5 packets."
-    )
-
-    print(
-        "Press CTRL+C to stop.\n"
-    )
+    print(f"Local IP: {LOCAL_IP}")
+    print(f"Capture interface: {CAPTURE_INTERFACE}")
+    print("\nStarting live packet capture...")
+    print(f"A prediction will be generated when a flow reaches {FLOW_PACKET_THRESHOLD} packets.")
+    print("Press CTRL+C to stop.\n")
 
     processed_flows = set()
 
-    # ---------------------------------------------------------
-    # Packet processing
-    # ---------------------------------------------------------
-
     def process_packet(packet):
+        # ---- Behavioral PortScan detection (runs on every packet) ----
+        try:
+            scanner.process(packet)
+        except Exception as error:
+            print(f"\nPortScan detection error: {error}")
 
-        flow_key = builder.process_packet(
-            packet
-        )
-
+        # ---- ML flow-based classification ----
+        flow_key = builder.process_packet(packet)
         if flow_key is None:
             return
 
-        flow = builder.flows[
-            flow_key
-        ]
+        flow = builder.flows[flow_key]
 
-        # -----------------------------------------------------
-        # Wait until flow reaches 5 packets
-        # -----------------------------------------------------
-
-        if len(flow.packets) < 5:
+        if len(flow.packets) < FLOW_PACKET_THRESHOLD:
             return
-
-        # -----------------------------------------------------
-        # Predict each flow only once
-        # -----------------------------------------------------
 
         if flow_key in processed_flows:
             return
+        processed_flows.add(flow_key)
 
-        processed_flows.add(
-            flow_key
-        )
-
-        # -----------------------------------------------------
-        # Extract features
-        # -----------------------------------------------------
-
-        features = builder.get_features(
-            flow_key
-        )
-
+        features = builder.get_features(flow_key)
         if features is None:
             return
 
-        live_df = pd.DataFrame(
-            [features]
-        )
+        live_df = pd.DataFrame([features])
 
-        # -----------------------------------------------------
-        # Validate feature count
-        # -----------------------------------------------------
-
-        if len(live_df.columns) != len(
-            feature_names
-        ):
-
-            print(
-                "\nERROR: Incorrect feature count."
-            )
-
-            print(
-                f"Expected: "
-                f"{len(feature_names)}"
-            )
-
-            print(
-                f"Received: "
-                f"{len(live_df.columns)}"
-            )
-
+        if len(live_df.columns) != len(feature_names):
+            print("\nERROR: Incorrect feature count.")
+            print(f"Expected: {len(feature_names)}")
+            print(f"Received: {len(live_df.columns)}")
             return
-
-        # -----------------------------------------------------
-        # Match training feature order
-        # -----------------------------------------------------
 
         try:
-
-            live_df = live_df[
-                feature_names
-            ]
-
+            live_df = live_df[feature_names]
         except KeyError as error:
-
-            print(
-                "\nERROR: Feature mismatch."
-            )
-
+            print("\nERROR: Feature mismatch.")
             print(error)
-
             return
 
-        # -----------------------------------------------------
-        # Generate prediction probabilities
-        # -----------------------------------------------------
+        prediction_probabilities = model.predict_proba(live_df)[0]
+        best_index = prediction_probabilities.argmax()
+        prediction_id = int(model.classes_[best_index])
+        confidence = float(prediction_probabilities[best_index])
+        prediction_label = label_mapping.get(prediction_id, f"Unknown ({prediction_id})")
 
-        prediction_probabilities = (
-            model.predict_proba(
-                live_df
-            )[0]
-        )
+        endpoint_a_ip, endpoint_a_port = flow_key[0]
+        endpoint_b_ip, endpoint_b_port = flow_key[1]
 
-        # Find class with highest probability
-
-        best_index = (
-            prediction_probabilities.argmax()
-        )
-
-        prediction_id = int(
-            model.classes_[best_index]
-        )
-
-        confidence = float(
-            prediction_probabilities[
-                best_index
-            ]
-        )
-
-        prediction_label = (
-            label_mapping.get(
-                prediction_id,
-                f"Unknown ({prediction_id})"
-            )
-        )
-
-        # -----------------------------------------------------
-        # Get flow endpoints
-        # -----------------------------------------------------
-
-        endpoint_a = flow_key[0]
-        endpoint_b = flow_key[1]
-
-        endpoint_a_ip = endpoint_a[0]
-        endpoint_a_port = endpoint_a[1]
-
-        endpoint_b_ip = endpoint_b[0]
-        endpoint_b_port = endpoint_b[1]
-
-        # -----------------------------------------------------
-        # Determine severity
-        # -----------------------------------------------------
-
-        if prediction_label == "Benign":
-
-            severity = "LOW"
-
-        else:
-
-            severity = "HIGH"
-
-        # -----------------------------------------------------
-        # Log alert
-        # -----------------------------------------------------
+        severity = "LOW" if prediction_label == "Benign" else "HIGH"
 
         log_alert(
             prediction=prediction_label,
@@ -306,120 +222,34 @@ def main():
             packets=len(flow.packets),
         )
 
-        # -----------------------------------------------------
-        # Display prediction
-        # -----------------------------------------------------
-
-        print(
-            "\n" + "=" * 70
-        )
-
-        print(
-            "SNIDS PREDICTION"
-        )
-
-        print(
-            "=" * 70
-        )
-
-        print(
-            f"Flow packets : "
-            f"{len(flow.packets)}"
-        )
-
-        print(
-            f"Features     : "
-            f"{len(live_df.columns)}"
-        )
-
-        print(
-            f"Prediction ID: "
-            f"{prediction_id}"
-        )
-
-        print(
-            f"Prediction   : "
-            f"{prediction_label}"
-        )
-
-        print(
-            f"Confidence   : "
-            f"{confidence * 100:.2f}%"
-        )
-
-        print(
-            f"Endpoint A   : "
-            f"{endpoint_a_ip}:{endpoint_a_port}"
-        )
-
-        print(
-            f"Endpoint B   : "
-            f"{endpoint_b_ip}:{endpoint_b_port}"
-        )
-
-        # -----------------------------------------------------
-        # Status
-        # -----------------------------------------------------
+        print("\n" + "=" * 70)
+        print("SNIDS PREDICTION")
+        print("=" * 70)
+        print(f"Flow packets : {len(flow.packets)}")
+        print(f"Features     : {len(live_df.columns)}")
+        print(f"Prediction ID: {prediction_id}")
+        print(f"Prediction   : {prediction_label}")
+        print(f"Confidence   : {confidence * 100:.2f}%")
+        print(f"Endpoint A   : {endpoint_a_ip}:{endpoint_a_port}")
+        print(f"Endpoint B   : {endpoint_b_ip}:{endpoint_b_port}")
 
         if prediction_label == "Benign":
-
-            print(
-                "\nSTATUS       : NORMAL TRAFFIC"
-            )
-
+            print("\nSTATUS       : NORMAL TRAFFIC")
         else:
+            print("\nSTATUS       : \U0001f6a8 ATTACK DETECTED")
 
-            print(
-                "\nSTATUS       : 🚨 ATTACK DETECTED"
-            )
-
-        print(
-            f"Severity     : "
-            f"{severity}"
-        )
-
-        print(
-            "Alert logged to: "
-            "logs/snids_alerts.csv"
-        )
-
-    # ---------------------------------------------------------
-    # Start packet capture
-    # ---------------------------------------------------------
+        print(f"Severity     : {severity}")
+        print("Alert logged to: logs/snids_alerts.csv")
 
     try:
-
         from scapy.all import sniff
-
-        sniff(
-            prn=process_packet,
-            store=False
-        )
-
+        sniff(iface=CAPTURE_INTERFACE, prn=process_packet, store=False)
     except KeyboardInterrupt:
-
-        print(
-            "\n"
-        )
-
-        print(
-            "=" * 70
-        )
-
-        print(
-            "SNIDS LIVE INFERENCE STOPPED"
-        )
-
-        print(
-            "=" * 70
-        )
-
-        print(
-            f"Flows analyzed: "
-            f"{len(processed_flows)}"
-        )
+        print("\n" + "=" * 70)
+        print("SNIDS LIVE INFERENCE STOPPED")
+        print("=" * 70)
+        print(f"Flows analyzed: {len(processed_flows)}")
 
 
 if __name__ == "__main__":
-
     main()
