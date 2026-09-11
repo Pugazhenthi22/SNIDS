@@ -1,33 +1,7 @@
-# Virtual Environment
-.venv/
-
-# Python cache
-__pycache__/
-*.py[cod]
-
-# Processed datasets
-data/processed/
-
-# VS Code / Cursor
-.vscode/
-
-# Logs
-logs/
-
-# OS files
-Thumbs.db
-.DS_Store
-
-# WSL virtual environment
 .venv-wsl/
-
-# Trained models
-models/
-
-# Generated reports
-
-# Experimental / temporary files
-new/
-
-# Raw datasets
-data/raw/
+__pycache__/
+*.pyc
+logs/*.csv
+*.log
+hulk_flood.py
+bruteforce_test.py
