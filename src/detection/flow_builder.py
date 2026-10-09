@@ -8,6 +8,7 @@ class FlowBuilder:
     def __init__(self, local_ip):
         self.local_ip = local_ip
         self.flows = defaultdict(FlowFeatureExtractor)
+        self.flow_origin = {}
 
     def get_flow_key(self, src_ip, src_port, dst_ip, dst_port, protocol):
         """
@@ -79,18 +80,23 @@ class FlowBuilder:
             packet.payload.payload
         )
 
-        direction = (
-            "fwd"
-            if src_ip == self.local_ip
-            else "bwd"
-        )
-
         flow_key = self.get_flow_key(
             src_ip,
             src_port,
             dst_ip,
             dst_port,
             protocol
+        )
+
+        if flow_key not in self.flow_origin:
+            self.flow_origin[flow_key] = (src_ip, src_port)
+
+        origin_ip, origin_port = self.flow_origin[flow_key]
+
+        direction = (
+            "fwd"
+            if (src_ip, src_port) == (origin_ip, origin_port)
+            else "bwd"
         )
 
         extractor = self.flows[flow_key]

@@ -14,13 +14,14 @@ Then open:
 """
 
 import csv
+import os
 from collections import Counter, OrderedDict
 from pathlib import Path
 
 from flask import Flask, jsonify, send_from_directory
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-LOG_FILE = PROJECT_ROOT / "logs" / "snids_alerts.csv"
+LOG_FILE = Path(os.environ.get("SNIDS_LOG", PROJECT_ROOT / "logs" / "snids_alerts.csv"))
 DASHBOARD_DIR = Path(__file__).resolve().parent
 
 # Adjust these to match alert_logger.py's actual column order if different.
