@@ -5,3 +5,22 @@ logs/*.csv
 *.log
 hulk_flood.py
 bruteforce_test.py
+
+# Processed datasets and trained models
+data/processed/
+models/
+
+# Temporary testing scripts
+add_debug_print.py
+bot_beacon_test.py
+bruteforce_test2.py
+docker_test_server_threaded.py
+fix_flow_direction.py
+hulk_flood2.py
+pull_hulk_row.py
+webattack_test.py
+
+# Backup files
+*.backup
+*.backup*
+new/
