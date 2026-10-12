@@ -38,13 +38,21 @@ def read_alerts():
         return []
 
     rows = []
-    with open(LOG_FILE, "r", newline="") as f:
-        reader = csv.reader(f)
-        for parts in reader:
-            if not parts:
+    with open(LOG_FILE, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+
+        for row in reader:
+            if not row:
                 continue
-            row = dict(zip(COLUMNS, parts))
+
+            if row.get("timestamp") == "timestamp":
+                continue
+
+            if not row.get("prediction") or not row.get("timestamp"):
+                continue
+
             rows.append(row)
+
     return rows
 
 
@@ -105,12 +113,15 @@ def api_alerts():
 
     severity_counts = {"LOW": 0, "HIGH": 0}
     for r in rows:
-        sev = r.get("severity", "LOW")
+        sev = (r.get("severity") or "LOW").strip().upper()
+        if not sev:
+            sev = "LOW"
         severity_counts[sev] = severity_counts.get(sev, 0) + 1
+
 
     attack_type_counts = {}
     for r in rows:
-        pred = r.get("prediction", "Unknown")
+        pred = r.get("prediction") or "Unknown"
         if pred != "Benign":
             attack_type_counts[pred] = attack_type_counts.get(pred, 0) + 1
 
@@ -131,3 +142,4 @@ def api_alerts():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)
+

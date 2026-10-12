@@ -17,8 +17,17 @@ from alert_logger import log_alert
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-MODEL_FILE = PROJECT_ROOT / "models" / "balanced_random_forest.joblib"
-TRAIN_FILE = PROJECT_ROOT / "data" / "processed" / "X_train.parquet"
+MODEL_NAME = sys.argv[2] if len(sys.argv) > 2 else "balanced"
+
+MODEL_FILES = {
+    "balanced": PROJECT_ROOT / "models" / "balanced_random_forest.joblib",
+    "experiment": PROJECT_ROOT / "models" / "balanced_random_forest_experiment.joblib",
+}
+
+if MODEL_NAME not in MODEL_FILES:
+    raise ValueError("Choose model: balanced or experiment")
+
+MODEL_FILE = MODEL_FILES[MODEL_NAME]
 LABEL_FILE = PROJECT_ROOT / "data" / "processed" / "label_mapping.csv"
 
 # Flow-based ML classification fires once a flow reaches this many packets.
@@ -27,7 +36,10 @@ FLOW_PACKET_THRESHOLD = 5
 # Behavioral PortScan detection: N unique destination ports within WINDOW seconds.
 PORTSCAN_WINDOW = 10
 PORTSCAN_THRESHOLD = 10
-
+CONN_RATE_WINDOW = 10
+CONN_RATE_THRESHOLD = 20
+HIGH_TRAFFIC_WINDOW = 5
+HIGH_TRAFFIC_THRESHOLD = 200
 
 # ================================================================
 # Interface / local IP resolution
@@ -132,6 +144,109 @@ class PortScanDetector:
 
         print("Alert logged to: logs/snids_alerts.csv")
 
+class ConnectionRateDetector:
+    """Detect a burst of new TCP connection attempts from one source."""
+
+    def __init__(self, window=CONN_RATE_WINDOW,
+                 threshold=CONN_RATE_THRESHOLD):
+        self.window = window
+        self.threshold = threshold
+        self.tracker = defaultdict(deque)
+        self.alerted = set()
+
+    def process(self, packet):
+        if not packet.haslayer("IP") or not packet.haslayer("TCP"):
+            return
+
+        tcp = packet["TCP"]
+        flags = int(tcp.flags)
+
+        # Count new connection attempts: SYN set, ACK not set.
+        if not (flags & 0x02) or (flags & 0x10):
+            return
+
+        ip = packet["IP"]
+        source_ip = ip.src
+        destination_ip = ip.dst
+        now = time.time()
+
+        events = self.tracker[source_ip]
+        events.append((now, destination_ip, int(tcp.dport)))
+
+        while events and now - events[0][0] > self.window:
+            events.popleft()
+
+        if len(events) >= self.threshold:
+            if source_ip not in self.alerted:
+                self.alerted.add(source_ip)
+
+                print("\n" + "=" * 60)
+                print("SNIDS BEHAVIORAL DETECTION")
+                print("Detection    : HighConnectionRate")
+                print(f"Source IP    : {source_ip}")
+                print(f"Attempts     : {len(events)}")
+                print(f"Window       : {self.window} seconds")
+                print("Severity     : HIGH")
+                print("=" * 60)
+
+                log_alert(
+                    prediction="HighConnectionRate",
+                    source_ip=source_ip,
+                    destination_ip=destination_ip,
+                    packets=len(events),
+                )
+        elif source_ip in self.alerted:
+            self.alerted.discard(source_ip)
+
+class HighTrafficDetector:
+    """Detect unusually high IP packet rates from a single source."""
+
+    def __init__(
+        self,
+        window=HIGH_TRAFFIC_WINDOW,
+        threshold=HIGH_TRAFFIC_THRESHOLD,
+    ):
+        self.window = window
+        self.threshold = threshold
+        self.tracker = defaultdict(deque)
+        self.alerted = set()
+
+    def process(self, packet):
+        if not packet.haslayer("IP"):
+            return
+
+        ip = packet["IP"]
+        source_ip = ip.src
+        destination_ip = ip.dst
+        now = time.time()
+
+        events = self.tracker[source_ip]
+        events.append(now)
+
+        while events and now - events[0] > self.window:
+            events.popleft()
+
+        if len(events) >= self.threshold:
+            if source_ip not in self.alerted:
+                self.alerted.add(source_ip)
+
+                print("\n" + "=" * 60)
+                print("SNIDS BEHAVIORAL DETECTION")
+                print("Detection    : HighTraffic")
+                print(f"Source IP    : {source_ip}")
+                print(f"Packets      : {len(events)}")
+                print(f"Window       : {self.window} seconds")
+                print("Severity     : HIGH")
+                print("=" * 60)
+
+                log_alert(
+                    prediction="HighTraffic",
+                    source_ip=source_ip,
+                    destination_ip=destination_ip,
+                    packets=len(events),
+                )
+        elif source_ip in self.alerted:
+            self.alerted.discard(source_ip)
 
 # ================================================================
 # Main
@@ -146,8 +261,8 @@ def main():
     model = joblib.load(MODEL_FILE)
     print("Model loaded successfully.")
 
-    X_train = pd.read_parquet(TRAIN_FILE)
-    feature_names = list(X_train.columns)
+    feature_names = list(model.feature_names_in_)
+    print(f"Selected model: {MODEL_NAME}")
     print(f"Expected features: {len(feature_names)}")
 
     label_mapping_df = pd.read_csv(LABEL_FILE)
@@ -155,6 +270,8 @@ def main():
 
     builder = FlowBuilder(LOCAL_IP)
     scanner = PortScanDetector()
+    connection_detector = ConnectionRateDetector()
+    high_traffic_detector = HighTrafficDetector()
 
     print(f"Local IP: {LOCAL_IP}")
     print(f"Capture interface: {CAPTURE_INTERFACE}")
@@ -170,6 +287,18 @@ def main():
             scanner.process(packet)
         except Exception as error:
             print(f"\nPortScan detection error: {error}")
+
+        try:
+            connection_detector.process(packet)
+        except Exception as error:
+            print(f"\nConnection-rate detection error: {error}")
+
+
+        try:
+            high_traffic_detector.process(packet)
+        except Exception as error:
+            print(f"\nHigh-traffic detection error: {error}")
+
 
         # ---- ML flow-based classification ----
         flow_key = builder.process_packet(packet)
