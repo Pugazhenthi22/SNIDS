@@ -4,8 +4,5 @@ name = "snids-dashboard"
 version = "1.0.0"
 requires-python = ">=3.12"
 
-[tool.vercel.scripts]
-build = "python -c \"print('SNIDS dashboard build complete')\""
-
 [tool.vercel]
 entrypoint = "dashboard.app:app"
