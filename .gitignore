@@ -24,3 +24,8 @@ webattack_test.py
 *.backup
 *.backup*
 new/
+
+# Environment secrets
+.env
+.env.*
+!.env.example
